@@ -62,7 +62,7 @@ typedef enum {
 #define MAX_ISM_PKT_SIZE  (64)
 #define PUB_QUEUE_DEPTH    (5)
 
-#define MQTT_HOST ("test.mosquitto.org")
+#define MQTT_HOST ("iot.eclipse.org")
 #define MQTT_PORT 1883
 #define MQTT_USER NULL
 #define MQTT_PASS NULL
@@ -202,16 +202,16 @@ static const char* get_my_id(void)
 }
 
 // MQTT publish helper
-static bool mqtt_publish(MQTTClient client, char *topic, char *message)
+static bool mqtt_publish_message(mqtt_client_t *client, char *topic, char *message)
 {
 //    printf("pub %s : %s\n", topic, message);
-    MQTTMessage pub;
+    mqtt_message_t pub;
     pub.payload = message;
     pub.payloadlen = strlen(message);
     pub.dup = 0;
-    pub.qos = QOS1;
+    pub.qos = MQTT_QOS1;
     pub.retained = 0;
-    if (SUCCESS != MQTTPublish(&client, topic, &pub)) {
+    if (MQTT_SUCCESS != mqtt_publish(client, topic, &pub)) {
         printf("Error while publishing message\n");
         return false;
     }
@@ -221,14 +221,14 @@ static bool mqtt_publish(MQTTClient client, char *topic, char *message)
 static void mqtt_task(void *pvParameters)
 {
     int ret = 0;
-    struct Network network;
-    MQTTClient client = DefaultClient;
+    mqtt_network_t network;
+    mqtt_client_t client = mqtt_client_default;
     char mqtt_client_id[20];
     uint8_t mqtt_buf[100];
     uint8_t mqtt_readbuf[100];
-    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+    mqtt_packet_connect_data_t data = mqtt_packet_connect_data_initializer;
 
-    NewNetwork(&network);
+    mqtt_network_new(&network);
     snprintf(mqtt_client_id, sizeof(mqtt_client_id)-1, "espism-%s", get_my_id());
 
     while(1) {
@@ -236,15 +236,15 @@ static void mqtt_task(void *pvParameters)
         xSemaphoreTake(wifi_alive, portMAX_DELAY);
         printf("%s: started\n", __func__);
         printf("%s: (Re)connecting to MQTT server %s ... ",__func__, MQTT_HOST);
-        ret = ConnectNetwork(&network, MQTT_HOST, MQTT_PORT);
+        ret = mqtt_network_connect(&network, MQTT_HOST, MQTT_PORT);
         if(ret) {
             printf("error: %d\n", ret);
-//            DisconnectNetwork(&network);
+//            mqtt_network_disconnect(&network);
             taskYIELD();
             continue;
         }
         printf("done\n");
-        NewMQTTClient(&client, &network, 5000, mqtt_buf, sizeof(mqtt_buf), mqtt_readbuf, sizeof(mqtt_readbuf)); // Todo: Remove magic numbers
+        mqtt_client_new(&client, &network, 5000, mqtt_buf, sizeof(mqtt_buf), mqtt_readbuf, sizeof(mqtt_readbuf)); // Todo: Remove magic numbers
 
         data.willFlag = 0;
         data.MQTTVersion = 3;
@@ -254,10 +254,10 @@ static void mqtt_task(void *pvParameters)
         data.keepAliveInterval = 10;
         data.cleansession = 0;
         printf("Send MQTT connect ...\n");
-        ret = MQTTConnect(&client, &data);
+        ret = mqtt_connect(&client, &data);
         if(ret) {
             printf("error: %d\n", ret);
-            DisconnectNetwork(&network);
+            mqtt_network_disconnect(&network);
             taskYIELD();
             continue;
         }
@@ -267,7 +267,7 @@ static void mqtt_task(void *pvParameters)
         xQueueReset(publish_queue);
 
         snprintf(msg, sizeof(msg)-1, "Hello from %s", get_my_ip());
-        (void) mqtt_publish(client, (char*) mqtt_client_id, (char*) msg);
+        (void) mqtt_publish_message(&client, (char*) mqtt_client_id, (char*) msg);
 
         while(1) {
             uint8_t pkt[MAX_ISM_PKT_SIZE];
@@ -283,17 +283,17 @@ static void mqtt_task(void *pvParameters)
                     msg_len -= 2;
                 }
                 snprintf(msg, sizeof(msg)-1, "%s[%d]", msg, rssi);
-                (void) mqtt_publish(client, (char*) mqtt_client_id, (char*) msg);
+                (void) mqtt_publish_message(&client, (char*) mqtt_client_id, (char*) msg);
             }
 
-            ret = MQTTYield(&client, 1000);
-            if (ret == DISCONNECTED) {
+            ret = mqtt_yield(&client, 1000);
+            if (ret == MQTT_DISCONNECTED) {
                 xSemaphoreTake(sniffer_alive, portMAX_DELAY);
                 break;
             }
         }
         printf("Connection dropped, request restart\n");
-        DisconnectNetwork(&network);
+        mqtt_network_disconnect(&network);
         delay_ms(1000);
         taskYIELD();
     }
