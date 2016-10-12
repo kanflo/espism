@@ -60,7 +60,7 @@ typedef enum {
 //#define RFM69_RESET   (0) // Doh!
 
 #define MAX_ISM_PKT_SIZE  (64)
-#define PUB_QUEUE_DEPTH    (5)
+#define PUB_QUEUE_DEPTH    (10)
 
 #define MQTT_HOST ("iot.eclipse.org")
 #define MQTT_PORT 1883
