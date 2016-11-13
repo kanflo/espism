@@ -53,11 +53,26 @@ typedef enum {
     led_flash_fast
 } led_state_t;
 
-//#define LED_GPIO      (15) // Espism v1
-#define LED_GPIO      (0) // Espism v2
-#define RFM69_INT     (5)
-#define RFM69_CS      (4)
-//#define RFM69_RESET   (0) // Doh!
+
+#define HW_REV   (2) // 1..3
+
+#if HW_REV==1
+ #define LED_GPIO      (15)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+#elif HW_REV==2
+ #define LED_GPIO       (0)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+#elif HW_REV==3
+ #define LED_GPIO      (15)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+ #define RFM69_RESET   (16) // Only on v3
+#else
+ #error "Unsupported HW revision"
+#endif
+
 
 #define MAX_ISM_PKT_SIZE  (64)
 #define PUB_QUEUE_DEPTH    (10)
@@ -67,13 +82,13 @@ typedef enum {
 #define MQTT_USER NULL
 #define MQTT_PASS NULL
 
-xSemaphoreHandle wifi_alive;
-xSemaphoreHandle sniffer_alive;
-xQueueHandle publish_queue;
+SemaphoreHandle_t wifi_alive;
+SemaphoreHandle_t sniffer_alive;
+QueueHandle_t publish_queue;
 
 led_state_t g_led_state = led_off;
 
-#define delay_ms(ms) vTaskDelay(ms / portTICK_RATE_MS)
+#define delay_ms(ms) vTaskDelay(ms / portTICK_PERIOD_MS)
 
 static void set_led(bool on)
 {
@@ -126,11 +141,8 @@ static bool ism_init()
     }
     init = true;
 #ifdef RFM69_RESET
-//    rfm69_setResetPin(RFM69_RESET);
-//    rfm69_reset();
-    gpio_enable(RFM69_RESET, GPIO_OUTPUT);
-    gpio_write(RFM69_RESET, 0);
-//    gpio_enable(RFM69_RESET, GPIO_INPUT);
+    rfm69_setResetPin(RFM69_RESET);
+    rfm69_reset();
 #endif // RFM69_RESET
 
     spi_init(iHSPI);
@@ -239,7 +251,7 @@ static void mqtt_task(void *pvParameters)
         ret = mqtt_network_connect(&network, MQTT_HOST, MQTT_PORT);
         if(ret) {
             printf("error: %d\n", ret);
-//            mqtt_network_disconnect(&network);
+            mqtt_network_disconnect(&network);
             taskYIELD();
             continue;
         }
@@ -267,6 +279,7 @@ static void mqtt_task(void *pvParameters)
         xQueueReset(publish_queue);
 
         snprintf(msg, sizeof(msg)-1, "Hello from %s", get_my_ip());
+        printf("Publishing %s/%s'\n", mqtt_client_id, msg);
         (void) mqtt_publish_message(&client, (char*) mqtt_client_id, (char*) msg);
 
         while(1) {
@@ -283,6 +296,7 @@ static void mqtt_task(void *pvParameters)
                     msg_len -= 2;
                 }
                 snprintf(msg, sizeof(msg)-1, "%s[%d]", msg, rssi);
+                printf("Publishing %s/%s'\n", mqtt_client_id, msg);
                 (void) mqtt_publish_message(&client, (char*) mqtt_client_id, (char*) msg);
             }
 

@@ -28,16 +28,26 @@
 #include "rboot-api.h"
 
 
+#define HW_REV   (2) // 1..3
 
-//#define LED_GPIO      (15) // v1
-#define LED_GPIO      (0) // v2
+#if HW_REV==1
+ #define LED_GPIO      (15)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+#elif HW_REV==2
+ #define LED_GPIO       (0)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+#elif HW_REV==3
+ #define LED_GPIO      (15)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+ #define RFM69_RESET   (16) // Only on v3
+#else
+ #error "Unsupported HW revision"
+#endif
 
-#define RFM69_INT     (5)
-#define RFM69_CS      (4)
-//#define RFM69_RESET   (0) // Doh!
-
-#define LOOP_DELAY_MS 1000
-
+#define LOOP_DELAY_MS 2000
 
 #define MAX_ARGC (10)
 
@@ -67,11 +77,8 @@ static bool ism_init()
     }
     init = true;
 #ifdef RFM69_RESET
-//    rfm69_setResetPin(RFM69_RESET);
-//    rfm69_reset();
-    gpio_enable(RFM69_RESET, GPIO_OUTPUT);
-    gpio_write(RFM69_RESET, 0);
-//    gpio_enable(RFM69_RESET, GPIO_INPUT);
+    rfm69_setResetPin(RFM69_RESET);
+    rfm69_reset();
 #endif // RFM69_RESET
 
     spi_init(iHSPI);
@@ -88,7 +95,7 @@ static bool ism_init()
         rfm69_setCSMA(true); // enable CSMA/CA algorithm
         rfm69_setAutoReadRSSI(true);
         (void) rfm69_setAESEncryption((void*) "sampleEncryptKey", 16);
-        rfm69_setPowerLevel(0); // max 31
+        rfm69_setPowerLevel(31); // max 31
     }
     return true;
 }
@@ -182,6 +189,30 @@ static bool cmd_tx(uint32_t argc, char *argv[])
     return true;
 }
 
+static bool cmd_write_register(uint32_t argc, char *argv[])
+{
+    if (argc == 3) {
+        uint32_t reg = atoi(argv[1]);
+        uint32_t val = atoi(argv[2]);
+        printf("%x = %d\n", reg, val);
+        rfm69_writeRegister(reg, val);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+static bool cmd_read_register(uint32_t argc, char *argv[])
+{
+    if (argc == 2) {
+        uint32_t reg = atoi(argv[1]);
+        printf("[%d] == 0x%x\n", reg, rfm69_readRegister(reg));
+        return true;
+    } else {
+        return false;
+    }
+}
+
 static bool cmd_dump_registers(uint32_t argc, char *argv[])
 {
     rfm69_dumpRegisters();        
@@ -190,12 +221,17 @@ static bool cmd_dump_registers(uint32_t argc, char *argv[])
 
 static bool cmd_help(uint32_t argc, char *argv[])
 {
-    printf("on <gpio number> [ <gpio number>]+     Set gpio to 1\n");
-    printf("off <gpio number> [ <gpio number>]+    Set gpio to 0\n");
-    printf("sleep                                  Take a nap\n");
-    printf("\nExample:\n");
-    printf("  on 0<enter> switches on gpio 0\n");
-    printf("  on 0 2 4<enter> switches on gpios 0, 2 and 4\n");
+    printf(
+        "adc [<on|off>]      Print adc value or start/stop polling\n"
+        "led <on|off>        Control LED\n"
+        "button [<on|off>]   Print button value or start/stop polling\n"
+        "init                Initialize RFM69CW\n"
+        "tx                  TX one packet\n"
+        "rx                  RX one packet\n"
+        "registers           Dump RFM69CW registers\n"
+        "w <reg> <value>     Write RFM69CW register\n"
+        "r <reg>             Read RFM69CW register\n"
+    );
     return true;
 }
 
@@ -225,6 +261,8 @@ static void handle_command(char *cmd)
         else if (strcmp(argv[0], "tx") == 0) ok = cmd_tx(argc, argv);
         else if (strcmp(argv[0], "rx") == 0) ok = cmd_rx(argc, argv);
         else if (strcmp(argv[0], "registers") == 0) ok = cmd_dump_registers(argc, argv);
+        else if (strcmp(argv[0], "w") == 0) ok = cmd_write_register(argc, argv);
+        else if (strcmp(argv[0], "r") == 0) ok = cmd_read_register(argc, argv);
         else printf("Unknown command %s, try 'help'\n", argv[0]);
         if (ok) printf("ok\n");
     }
