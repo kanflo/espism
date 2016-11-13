@@ -5983,7 +5983,7 @@ You are welcome to use this library for commercial purposes. For attribution, we
 </libraries>
 <attributes>
 <attribute name="CNAME" value="An ISM to Wifi gateway"/>
-<attribute name="CREVISION" value="1"/>
+<attribute name="CREVISION" value="2"/>
 <attribute name="DESIGNER" value="Johan Kanflo"/>
 </attributes>
 <variantdefs>
