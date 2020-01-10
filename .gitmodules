@@ -1,0 +1,6 @@
+[submodule "mqtt_sniffer/esp-open-rtos"]
+	path = mqtt_sniffer/esp-open-rtos
+	url = https://github.com/superhouse/esp-open-rtos.git
+[submodule "mqtt_sniffer/rfm69"]
+	path = mqtt_sniffer/rfm69
+	url = https://github.com/kanflo/eor-rfm69.git

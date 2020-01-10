@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <spi.h>
+#include <esp/spi.h>
 #include <rfm69.h>
 #include <ssid_config.h>
 #include <FreeRTOS.h>
@@ -50,12 +50,14 @@ typedef enum {
     led_off = 0,
     led_flash_once,
     led_flash_double,
+    led_flash_slow,
     led_flash_fast
 } led_state_t;
 
 
-#define HW_REV   (2) // 1..3
+#define HW_REV CONFIG_HW_REV
 
+/** The various espism boards I have build */
 #if HW_REV==1
  #define LED_GPIO      (15)
  #define RFM69_INT      (5)
@@ -69,26 +71,46 @@ typedef enum {
  #define RFM69_INT      (5)
  #define RFM69_CS       (4)
  #define RFM69_RESET   (16) // Only on v3
+#elif HW_REV==4
+ #define LED_GPIO      (15)
+ #define RFM69_INT      (5)
+ #define RFM69_CS       (4)
+ #define RFM69_RESET   (16) // Only on v4
 #else
  #error "Unsupported HW revision"
 #endif
 
 
 #define MAX_ISM_PKT_SIZE  (64)
-#define PUB_QUEUE_DEPTH    (10)
+#define PUB_QUEUE_DEPTH   (10)
 
-#define MQTT_HOST ("iot.eclipse.org")
-#define MQTT_PORT 1883
-#define MQTT_USER NULL
-#define MQTT_PASS NULL
+#define MQTT_HOST CONFIG_MQTT_HOST
+#define MQTT_PORT CONFIG_MQTT_PORT
+
+#ifdef CONFIG_MQTT_USER
+ #define MQTT_USER CONFIG_MQTT_USER
+#else // CONFIG_MQTT_USER
+ #define MQTT_USER NULL
+#endif // CONFIG_MQTT_USER
+
+#ifdef CONFIG_MQTT_PASS
+ #define MQTT_PASS CONFIG_MQTT_PASS
+#else // CONFIG_MQTT_PASS
+ #define MQTT_PASS NULL
+#endif // CONFIG_MQTT_PASS
+
+#define RFM_KEY CONFIG_RFM_KEY
 
 SemaphoreHandle_t wifi_alive;
 SemaphoreHandle_t sniffer_alive;
 QueueHandle_t publish_queue;
 
-led_state_t g_led_state = led_off;
+volatile led_state_t g_led_state = led_off;
 
 #define delay_ms(ms) vTaskDelay(ms / portTICK_PERIOD_MS)
+
+static const char* get_station_mac(void);
+static const char* get_station_ip(void);
 
 static void set_led(bool on)
 {
@@ -100,6 +122,27 @@ static void set_led_state(led_state_t state)
     g_led_state = state;
 }
 
+static void heartbeat_task(void *param)
+{
+    (void) param;
+    char msg[MAX_ISM_PKT_SIZE];
+    while(1) {
+        delay_ms(60000);
+        printf("Publishing heartbeat\n");
+#if 0
+        /** Currently cannot do this as the entries in the queue are RFM
+         *  packets and not arbitrary strings
+         */
+        snprintf(msg, sizeof(msg)-1, "heartbeat:%s", get_station_ip());
+#else
+        memset(msg, 0, sizeof(msg));
+#endif
+        if (xQueueSend(publish_queue, (void*) msg, 0) == pdFALSE) {
+            printf("Publish queue overflow.\n");
+        }
+    }
+}
+
 static void led_task(void *pvParameters)
 {
     while(1) {
@@ -108,26 +151,23 @@ static void led_task(void *pvParameters)
                 delay_ms(100); // Do not while(1). Todo: Use semaphore
                 break;
             case led_flash_once:
-                set_led(true);
-                delay_ms(50);
-                set_led(false);
+                set_led(1);  delay_ms(50);
+                set_led(0);
                 g_led_state = led_off;
                 break;
             case led_flash_double:
-                set_led(true);
-                delay_ms(10);
-                set_led(false);
-                delay_ms(100);
-                set_led(true);
-                delay_ms(10);
-                set_led(false);
-                delay_ms(950);
+                set_led(1); delay_ms(50);
+                set_led(0); delay_ms(250);
+                set_led(1); delay_ms(50);
+                set_led(0); delay_ms(950);
                 break;
             case led_flash_fast:
-                set_led(true);
-                delay_ms(10);
-                set_led(false);
-                delay_ms(450);
+                set_led(1); delay_ms(10);
+                set_led(0); delay_ms(450);
+                break;
+            case led_flash_slow:
+                set_led(1); delay_ms(500);
+                set_led(0); delay_ms(500);
                 break;
         }
     }
@@ -145,28 +185,32 @@ static bool ism_init()
     rfm69_reset();
 #endif // RFM69_RESET
 
-    spi_init(iHSPI);
-    bool ok = rfm69_init(RFM69_CS, false); // false = RFM69W, true = RFM69HW
+    spi_init(1, SPI_MODE0, SPI_FREQ_DIV_1M, 1, SPI_LITTLE_ENDIAN, true);
+    /** true = RFM69HW, false = RFM69W */
+    bool ok = rfm69_init(RFM69_CS, false);
     if (!ok) {
         printf("RFM69 init failed!\n");
+        set_led_state(led_flash_slow);
         return false;
     } else {
         printf("RFM69 init ok\n");
         gpio_enable(RFM69_INT, GPIO_INPUT);
-        rfm69_sleep(); // init RF module and put it to sleep
-        rfm69_setPowerDBm(10); // // set output power, +10 dBm
-        rfm69_setCSMA(true); // enable CSMA/CA algorithm
+        rfm69_sleep();
+        /** set output power, +10 dBm */
+        rfm69_setPowerDBm(10);
+        /** enable CSMA/CA algorithm */
+        rfm69_setCSMA(true);
         rfm69_setAutoReadRSSI(true);
-        (void) rfm69_setAESEncryption((void*) "sampleEncryptKey", 16);
+        (void) rfm69_setAESEncryption((void*) RFM_KEY, 16);
         rfm69_setPowerLevel(0); // max 31
     }
     return true;
 }
 
-static void rx_task(void *pvParameters)
+static void ism_task(void *pvParameters)
 {
     if (!ism_init()) {
-        taskYIELD();
+        return;
     }
     while(1) {
         xSemaphoreTake(sniffer_alive, portMAX_DELAY);
@@ -179,7 +223,7 @@ static void rx_task(void *pvParameters)
             data[0] = len+1; // [len data[0] data[1] ... data[len-1] rssi]
             data[len] = (int8_t) rssi;
 //            rfm69_sleep();
-            if (xQueueSend(publish_queue, (void *)data, 0) == pdFALSE) {
+            if (xQueueSend(publish_queue, (void*) data, 0) == pdFALSE) {
                 printf("Publish queue overflow.\n");
             }
         }
@@ -188,7 +232,7 @@ static void rx_task(void *pvParameters)
 }
 
 // Return our IP address as a string "a.b.c.d" or "0.0.0.0" if we cannot determine it
-static const char* get_my_ip(void)
+static const char* get_station_ip(void)
 {
     static char ip[16] = "0.0.0.0";
     ip[0] = 0;
@@ -199,7 +243,7 @@ static const char* get_my_ip(void)
 }
 
 // Use MAC address for Station as unique ID
-static const char* get_my_id(void)
+static const char* get_station_mac(void)
 {
     static char my_id[32];
     static bool my_id_done = false;
@@ -241,13 +285,12 @@ static void mqtt_task(void *pvParameters)
     mqtt_packet_connect_data_t data = mqtt_packet_connect_data_initializer;
 
     mqtt_network_new(&network);
-    snprintf(mqtt_client_id, sizeof(mqtt_client_id)-1, "espism-%s", get_my_id());
+    snprintf(mqtt_client_id, sizeof(mqtt_client_id)-1, "espism-%s", get_station_mac());
 
     while(1) {
         char msg[3*MAX_ISM_PKT_SIZE];
         xSemaphoreTake(wifi_alive, portMAX_DELAY);
-        printf("%s: started\n", __func__);
-        printf("%s: (Re)connecting to MQTT server %s ... ",__func__, MQTT_HOST);
+        printf("Connecting to MQTT server %s ... ", MQTT_HOST);
         ret = mqtt_network_connect(&network, MQTT_HOST, MQTT_PORT);
         if(ret) {
             printf("error: %d\n", ret);
@@ -278,13 +321,13 @@ static void mqtt_task(void *pvParameters)
         set_led_state(led_off);
         xQueueReset(publish_queue);
 
-        snprintf(msg, sizeof(msg)-1, "Hello from %s", get_my_ip());
+        snprintf(msg, sizeof(msg)-1, "boot:%s", get_station_ip());
         printf("Publishing %s/%s'\n", mqtt_client_id, msg);
         (void) mqtt_publish_message(&client, (char*) mqtt_client_id, (char*) msg);
 
         while(1) {
             uint8_t pkt[MAX_ISM_PKT_SIZE];
-            while(xQueueReceive(publish_queue, (void *)pkt, 0) == pdTRUE) {
+            while(xQueueReceive(publish_queue, (void*) pkt, 0) == pdTRUE) {
                 uint8_t msg_len = sizeof(msg);
                 uint8_t len = pkt[0];
                 int8_t rssi = (int8_t) pkt[len-1];
@@ -329,7 +372,7 @@ static void wifi_task(void *pvParameters)
     while(1) {
         while ((status != STATION_GOT_IP) && (retries)) {
             status = sdk_wifi_station_get_connect_status();
-            printf("%s: status = %d\n", __func__, status);
+            printf("Wifi status : %d\n", status);
             if(status == STATION_WRONG_PASSWORD) {
                 printf("WiFi: wrong password\n");
                 break;
@@ -365,23 +408,27 @@ void user_init(void)
     set_led(false);
 
     uart_set_baud(0, 115200);
-    printf("SDK version:%s\n", sdk_system_get_sdk_version());
     rboot_config conf = rboot_get_config();
-    printf("\n\nEspism Sniffer.\nCurrently running on flash slot %d / %d.\n\n", conf.current_rom, conf.count);
+    printf("\n\nEspism Sniffer\n");
+    printf("SDK version:%s\n", sdk_system_get_sdk_version());
+    printf("HW rev %d\n", HW_REV);
 
+    printf("Running on flash slot %d / %d\n", conf.current_rom, conf.count);
     printf("Image addresses in flash:\n");
     for(int i = 0; i <conf.count; i++) {
         printf("%c%d: offset 0x%08x\n", i == conf.current_rom ? '*':' ', i, conf.roms[i]);
     }
     ota_tftp_init_server(TFTP_PORT);
+    set_led_state(led_flash_double);
+    xTaskCreate(&led_task,  "led_task",   256, NULL, 2, NULL);
+    delay_ms(5000); /** not sure why I added this ;) */
 
     vSemaphoreCreateBinary(wifi_alive);
     vSemaphoreCreateBinary(sniffer_alive);
     xSemaphoreTake(sniffer_alive, portMAX_DELAY);
     publish_queue = xQueueCreate(PUB_QUEUE_DEPTH, MAX_ISM_PKT_SIZE);
-    xTaskCreate(&wifi_task, (int8_t *) "wifi_task",  256, NULL, 2, NULL);
-    xTaskCreate(&mqtt_task, (int8_t *) "mqtt_task", 1024, NULL, 4, NULL);
-    xTaskCreate(&rx_task,   (int8_t *) "rx_task",    256, NULL, 2, NULL);
-    xTaskCreate(&led_task,  (int8_t *) "led_task",   256, NULL, 2, NULL);
-    set_led_state(led_flash_double);
+    xTaskCreate(&wifi_task, "wifi_task",  256, NULL, 2, NULL);
+    xTaskCreate(&mqtt_task, "mqtt_task", 1024, NULL, 4, NULL);
+    xTaskCreate(&ism_task,  "ism_task",   256, NULL, 2, NULL);
+    xTaskCreate(&heartbeat_task,  "heartbeat_task",   256, NULL, 2, NULL);
 }

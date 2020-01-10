@@ -7,11 +7,17 @@ Look at [hardware/v2](https://github.com/kanflo/espism/tree/master/hardware/v2) 
 #### Building
 
 ```
-git clone --recursive https://github.com/SuperHouse/esp-open-rtos.git
-vi esp-open-rtos/include/ssid_config.h # Fix wifi credentials
-git clone https://github.com/kanflo/eor-spi.git esp-open-rtos/extras/spi
-git clone https://github.com/kanflo/eor-rfm69 esp-open-rtos/extras/rfm69
-export EOR_ROOT=$PWD/esp-open-rtos
+git clone https://github.com/kanflo/espism.git
+cd espism
+git submodule init && git submodule update
 cd mqtt_sniffer
+vi esp-open-rtos/include/private_ssid_config.h # Fix wifi credentials
 make && make flash
+```
+
+Wifi credentials, in case you did not know, are written to `esp-open-rtos/include/private_ssid_config.h` as 
+
+```
+#define WIFI_SSID "your ssid"
+#define WIFI_PASS "your key"
 ```
